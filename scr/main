@@ -1,0 +1,186 @@
+%% Clean workspace and command window
+%   Clears all variables, closes all figures, and clears the command window
+clear; close all force; clc;
+
+% --- Read EV segment data from CSV ---
+carFile = 'ev_segments.csv';
+EV = readEVsegment(carFile);     % Read in the EV segments table
+disp(EV)                        % Display the segment table for reference
+
+% --- Aggregate main vehicle types from the segment table ---
+Summary = aggregateVehicleTypes(EV);
+disp(Summary)                   % Display vehicle type summary
+
+% --- Read charging infrastructure data ---
+CSFile = 'chargingStation.csv';
+L = readChargInfra(CSFile);     % Load charging station data
+disp(L)
+
+% --- Read charging compatibility information (vehicle <-> charging type) ---
+CCFile= 'chargingCompatible.csv';
+C = readChargingCompatible(CCFile);    % Table: which segments are compatible with which chargers
+disp(C)
+
+% --- Read temperature dependency data for batteries ---
+TFile = 'Temperatur.CSV';
+T = readTemperature(TFile);     % Load temperature impact data
+disp(T)
+
+% --- Main interactive loop for generating mobility/charging profiles ---
+keepRunning = true;
+while keepRunning
+    % ---- STEP 1: Prompt user to select vehicle type(s) to generate ----
+    choice = input( ...
+      'Which car profile do you want to generate? (ALL, LKW, PKW, VAN, BUS): ', 's');
+    choice = upper(strtrim(choice));  % Normalize input to uppercase
+
+    % ---- STEP 2: Prompt user for the number of desired profiles ----
+    N = input('How many profiles would you like to create? ');
+
+    % ---- STEP 3: Switch on the type of vehicle(s) requested ----
+    switch choice
+        case 'ALL'
+            % --- Generate profiles for every vehicle type in the right ratio ---
+            % Allocate the number of profiles to each type using fleet shares
+            Allocation = allocateProfiles(Summary, N);
+            disp(Allocation)
+            
+            % Get profile counts for each vehicle type
+            PKWNum = "PKW";
+            idx = Allocation.VehicleType == PKWNum;
+            countPKW = Allocation.Count(idx);
+            
+            vansNum = "Van";
+            idx = Allocation.VehicleType == vansNum;
+            countVans = Allocation.Count(idx);
+            
+            LKWNum = "LKW";
+            idx = Allocation.VehicleType == LKWNum;
+            countLKW = Allocation.Count(idx);
+            
+            busNum = "Bus";
+            idx = Allocation.VehicleType == busNum;
+            countBus = Allocation.Count(idx);
+            
+            % --- Prepare to write all profiles to ONE CSV file ---
+            t = datetime('now');
+            fname = "Stochastic generated EV mobility profiles_" + ...
+                string(t, 'dd_MMM_yyyy_HH-mm-ss') + ".csv";
+            
+            % Open the file for writing
+            fid = fopen(fname, 'w');
+            
+            % Generate and write profiles for each vehicle type
+            
+            % ---- Vans ----
+            % Each generated Van profile is written directly into the open file
+            generateVanProfiles(countVans, 'ev_segments.csv', 'chargingCompatible.csv', fid);
+            
+            % ---- LKW: 60% "over 7.5t", 40% "under 7.5t" ----
+            numUnder = max(round(0.4 * countLKW), 1);
+            numOver = countLKW - numUnder;
+            purposes = [repmat("LKW (over 7.5t)", numOver, 1); repmat("LKW (under 7.5t)", numUnder, 1)];
+            purposes = purposes(randperm(countLKW));  % Shuffle order randomly
+            generateLKWProfiles(purposes, 'ev_segments.csv', 'chargingCompatible.csv', fid);
+            
+            % ---- Bus ----
+            generateBusProfiles(countBus, 'ev_segments.csv', 'chargingCompatible.csv', fid);
+            
+            % ---- PKW: 9% "Service", rest "Private" ----
+            numService = max(round(0.09 * countPKW), 1);
+            numPrivate = countPKW - numService;
+            purposes = [repmat("Private", numPrivate, 1); repmat("Service", numService, 1)];
+            purposes = purposes(randperm(countPKW));  % Shuffle order randomly
+            
+            % Randomly assign PKW segment/size per car
+            sizes = ["Minis","Kleinwagen","Kompaktklasse","Mittelklasse", ...
+                     "Obere Mittelklasse","Oberklasse","SUV"];
+            randomSizes = sizes(randi(numel(sizes), countPKW, 1));
+            generatePKWProfiles(purposes, randomSizes, 'ev_segments.csv', 'chargingCompatible.csv', fid);
+            
+            % 5. After ALL vehicle types are written, close the file
+            fclose(fid);
+            disp(['Output written to: ', char(fname)]);
+
+        case 'PKW'
+            % --- Only generate PKW profiles (cars, not trucks/vans/buses) ---
+            % Purpose distribution: 9% Service, 30% Job & Education, rest Private
+            numService = max(round(0.09 * N), 1);
+            numJobEdu = max(round(0.3 * N), 1);
+            numPrivate = N - numJobEdu - numService;
+            purposes = [repmat("Private", numPrivate, 1); ...
+                        repmat("Job & Education", numJobEdu, 1); ...
+                        repmat("Service", numService, 1)];
+            purposes = purposes(randperm(N));  % Shuffle order randomly
+            
+            % Assign a random segment/size for each PKW
+            sizes = ["Minis","Kleinwagen","Kompaktklasse","Mittelklasse", ...
+                 "Obere Mittelklasse","Oberklasse","SUV"];
+            randomSizes = sizes(randi(numel(sizes), N, 1));  % One size per car
+            
+            % --- Save profiles to timestamped CSV file ---
+            t = datetime('now');
+            fname = "Stochastic generated PKW mobility profiles_" + ...
+                string(t, 'dd_MMM_yyyy_HH-mm-ss') + ".csv";
+            fid = fopen(fname, 'w');
+            generatePKWProfiles(purposes,randomSizes, 'ev_segments.csv', 'chargingCompatible.csv', fid);
+            fclose(fid);
+            disp(['Output written to: ', char(fname)]);
+
+        case 'LKW'
+            % --- Only generate LKW (truck) profiles ---
+            % Purpose: 60% "over 7.5t", 40% "under 7.5t"
+            numUnder = max(round(0.4 * N), 1);
+            numOver = N - numUnder;
+            purposes = [repmat("LKW (over 7.5t)", numOver, 1); repmat("LKW (under 7.5t)", numUnder, 1)];
+            purposes = purposes(randperm(N));  % Shuffle order randomly
+            
+            % Save output to file
+            t = datetime('now');
+            fname = "Stochastic generated LKW mobility profiles_" + ...
+                string(t, 'dd_MMM_yyyy_HH-mm-ss') + ".csv";
+            fid = fopen(fname, 'w');
+            generateLKWProfiles(purposes, 'ev_segments.csv', 'chargingCompatible.csv', fid);
+            fclose(fid);
+            disp(['Output written to: ', char(fname)]);
+            
+        case 'VAN'
+            % --- Only generate Van profiles ---
+            t = datetime('now');
+            fname = "Stochastic generated Van mobility profiles_" + ...
+                string(t, 'dd_MMM_yyyy_HH-mm-ss') + ".csv";
+            fid = fopen(fname, 'w');
+            generateVanProfiles(N, 'ev_segments.csv', 'chargingCompatible.csv', fid);
+            fclose(fid);
+            disp(['Output written to: ', char(fname)]);
+
+        case 'BUS'
+            % --- Only generate Bus profiles ---
+            t = datetime('now');
+            fname = "Stochastic generated Bus mobility profiles_" + ...
+                string(t, 'dd_MMM_yyyy_HH-mm-ss') + ".csv";
+            fid = fopen(fname, 'w');
+            generateBusProfiles(N, 'ev_segments.csv', 'chargingCompatible.csv', fid);
+            fclose(fid);
+            disp(['Output written to: ', char(fname)]);
+
+        otherwise
+            % --- Input not recognized: prompt again ---
+            fprintf('Invalid choice. Please enter ALL, LKW, PKW, VAN or BUS.\n');
+            continue   % Go back to top of loop to ask again
+    end
+
+    % --- Ask user if they want to generate more profiles or exit ---
+    again = input('Create more profiles? (Y/N): ', 's');
+    switch upper(strtrim(again))
+    case 'Y'
+        % continue looping (do nothing)
+    case 'N'
+        keepRunning = false;
+        fprintf('Goodbye!\n');
+    otherwise
+        keepRunning = false;
+        fprintf('Unrecognized input -> Stop.\n');
+    end
+end
+
