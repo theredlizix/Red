@@ -1,1 +1,9 @@
+ % --- Save profiles to timestamped CSV file ---
+            t = datetime('now');
+            fname = "Stochastic generated PKW mobility profiles_" + ...
+                string(t, 'dd_MMM_yyyy_HH-mm-ss') + ".csv";
+            fid = fopen(fname, 'w');
+            generatePKWProfiles(purposes,randomSizes, 'ev_segments.csv', 'chargingCompatible.csv', fid);
+            fclose(fid);
+            disp(['Output written to: ', char(fname)]);
 
